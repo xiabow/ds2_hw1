@@ -3,20 +3,6 @@ title: "Data Science II - Homework 1"
 author: "Bowen Xia (bx2232)"
 output:
   pdf_document:
-    toc: yes
-    toc_depth: 2
-  html_document:
-    df_print: paged
-    toc: yes
-    toc_depth: '2'
-header-includes:
-- \usepackage{fancyhdr}
-- \usepackage{lipsum}
-- \pagestyle{fancy}
-- \fancyhead[R]{\thepage}
-- \fancypagestyle{plain}{\pagestyle{fancy}}
-editor_options:
-  chunk_output_type: console
 ---
 
 \newpage
