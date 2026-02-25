@@ -1,0 +1,212 @@
+---
+title: "Data Science II - Homework 1"
+author: "Bowen Xia (bx2232)"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+editor_options:
+  chunk_output_type: console
+---
+
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r, echo = T, message = FALSE, results='hide', warning=FALSE}
+library(glmnet)
+library(caret)
+library(pls)
+library(plotmo)
+library(corrplot)
+library(tidyverse)
+```
+
+```{r}
+train <- read.csv("housing_training.csv")
+test  <- read.csv("housing_test.csv")
+
+fac_vars <- c("Overall_Qual", "Kitchen_Qual", "Fireplace_Qu", "Exter_Qual")
+train[fac_vars] <- lapply(train[fac_vars], as.factor)
+test[fac_vars]  <- lapply(test[fac_vars],  as.factor)
+
+y      <- train$Sale_Price
+y.test <- test$Sale_Price
+
+x      <- model.matrix(Sale_Price ~ ., train)[, -1]
+x.test <- model.matrix(Sale_Price ~ ., test)[, -1]
+```
+
+# (a) Lasso
+
+```{r}
+ctrl1 <- trainControl(method = "cv", number = 10)
+
+set.seed(2)
+lasso.fit <- train(Sale_Price ~ .,
+                   data      = train,
+                   method    = "glmnet",
+                   tuneGrid  = expand.grid(alpha  = 1,
+                                           lambda = exp(seq(10, 0, length = 100))),
+                   trControl = ctrl1)
+
+plot(lasso.fit, xTrans = log)
+lasso.fit$bestTune
+```
+
+```{r}
+coef(lasso.fit$finalModel, lasso.fit$bestTune$lambda)
+```
+
+```{r}
+# Test error
+lasso.pred <- predict(lasso.fit, newdata = test)
+mse.lasso  <- mean((lasso.pred - y.test)^2)
+mse.lasso
+```
+
+```{r}
+# 1SE rule
+lasso.res        <- lasso.fit$results
+threshold        <- min(lasso.res$RMSE) +
+                    lasso.res$RMSESD[which.min(lasso.res$RMSE)] / sqrt(10)
+lambda.1se.caret <- max(lasso.res$lambda[lasso.res$RMSE <= threshold])
+
+coef.1se <- coef(lasso.fit$finalModel, s = lambda.1se.caret)
+n.pred   <- sum(coef.1se != 0) - 1
+cat("lambda (1SE):", round(lambda.1se.caret, 4), "\n")
+cat("Number of predictors (1SE):", n.pred, "\n")
+```
+
+The selected tuning parameter (min CV) is $\lambda =$ `r round(lasso.fit$bestTune$lambda, 4)`, with a test MSE of `r round(mse.lasso, 2)`. Under the 1SE rule ($\lambda =$ `r round(lambda.1se.caret, 4)`), **`r n.pred` predictors** are included in the model.
+
+# (b) Elastic Net
+
+```{r}
+set.seed(2)
+enet.fit <- train(Sale_Price ~ .,
+                  data      = train,
+                  method    = "glmnet",
+                  tuneGrid  = expand.grid(alpha  = seq(0, 1, length = 21),
+                                          lambda = exp(seq(10, 0, length = 100))),
+                  trControl = ctrl1)
+
+enet.fit$bestTune
+
+myCol <- rainbow(25)
+myPar <- list(superpose.symbol = list(col = myCol),
+              superpose.line   = list(col = myCol))
+plot(enet.fit, par.settings = myPar, xTrans = log)
+```
+
+```{r}
+coef(enet.fit$finalModel, enet.fit$bestTune$lambda)
+```
+
+```{r}
+enet.pred <- predict(enet.fit, newdata = test)
+mse.enet  <- mean((enet.pred - y.test)^2)
+mse.enet
+```
+
+The selected tuning parameters are $\alpha =$ `r enet.fit$bestTune$alpha` and $\lambda =$ `r round(enet.fit$bestTune$lambda, 4)`, with a test MSE of `r round(mse.enet, 2)`.
+
+The 1SE rule is **not applicable** to elastic. Elastic net has two tuning parameters ($\alpha$, $\lambda$).
+
+# (c) Partial Least Squares
+
+```{r}
+set.seed(2)
+pls.fit <- train(Sale_Price ~ .,
+                 data       = train,
+                 method     = "pls",
+                 tuneGrid   = data.frame(ncomp = 1:20),
+                 trControl  = ctrl1,
+                 preProcess = c("center", "scale"))
+
+plot(pls.fit)
+pls.fit$bestTune
+```
+
+```{r}
+pls.pred <- predict(pls.fit, newdata = test)
+mse.pls  <- mean((pls.pred - y.test)^2)
+mse.pls
+```
+
+The PLS model includes **`r pls.fit$bestTune$ncomp` components**, with a test MSE of `r round(mse.pls, 2)`.
+
+# (d) Model Comparison
+
+```{r, fig.width = 6}
+set.seed(2)
+lm.fit <- train(Sale_Price ~ .,
+                data      = train,
+                method    = "lm",
+                trControl = ctrl1)
+
+resamp <- resamples(list(lasso = lasso.fit,
+                         enet  = enet.fit,
+                         pls   = pls.fit,
+                         lm    = lm.fit))
+summary(resamp)
+bwplot(resamp, metric = "RMSE")
+```
+
+```{r}
+data.frame(
+  Model    = c("Lasso", "Elastic Net", "PLS"),
+  Test_MSE = round(c(mse.lasso, mse.enet, mse.pls), 2)
+) |> knitr::kable()
+```
+
+The **elastic net** is the best model. It has the lowest test error while providing flexibility over Lasso through the additional $\alpha$ parameter.
+
+# (e) Lasso: `caret` vs `glmnet`
+
+```{r}
+set.seed(2)
+cv.lasso <- cv.glmnet(x, y,
+                      alpha  = 1,
+                      lambda = exp(seq(10, 0, length = 100)))
+
+plot(cv.lasso)
+abline(h = (cv.lasso$cvm + cv.lasso$cvsd)[which.min(cv.lasso$cvm)],
+       col = 4, lwd = 2)
+
+cv.lasso$lambda.min
+cv.lasso$lambda.1se
+```
+
+```{r}
+plot_glmnet(cv.lasso$glmnet.fit)
+```
+
+```{r}
+predict(cv.lasso, s = "lambda.min", type = "coefficients")
+```
+
+```{r}
+pred.glmnet <- as.numeric(predict(cv.lasso, newx = x.test, s = "lambda.min"))
+mse.glmnet  <- mean((pred.glmnet - y.test)^2)
+
+data.frame(
+  Package  = c("caret", "glmnet"),
+  Lambda   = round(c(lasso.fit$bestTune$lambda, cv.lasso$lambda.min), 4),
+  Test_MSE = round(c(mse.lasso, mse.glmnet), 2)
+) |> knitr::kable()
+```
+
+ `caret` searches only the user-supplied grid; While `glmnet` generates its own data-driven sequence starting from $\lambda_{\max}$. Despite these difference, both approaches yield similar test errors
